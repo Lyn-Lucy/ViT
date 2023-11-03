@@ -114,7 +114,7 @@ class LayerScale(nn.Module):   # 对层之间的输出进行缩放
 
 
 class Block(nn.Module):
-
+    # transformer 代码的基本块
     def __init__(
             self,
             dim,   
@@ -157,11 +157,12 @@ class Block(nn.Module):
     def forward(self, x):
         x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
         x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
+        # attn和mlp之后都dropout一次 残差
         return x
 
 
 class ResPostBlock(nn.Module):
-
+    # 它将注意力操作和多层感知器操作并行化，从而减少了计算开销
     def __init__(
             self,
             dim,
@@ -203,7 +204,9 @@ class ResPostBlock(nn.Module):
 
         self.init_weights()
 
-    def init_weights(self):
+    def init_weights(self): # 初始化layernorm的权重
+        #在 LayerNorm 层中，通常包含两个权重：weight 和 bias。weight 用于对输入数据的每个维度进行缩放操作，bias 用于对输入数据的每个维度进行平移操作。这两个权重都是可训练的参数，在模型训练过程中会被优化以提高模型的性能。
+        # y = weight * (x - mean) / sqrt(variance + epsilon) + bias
         # NOTE this init overrides that base model init with specific changes for the block type
         if self.init_values is not None:
             nn.init.constant_(self.norm1.weight, self.init_values)
@@ -245,11 +248,15 @@ class ParallelScalingBlock(nn.Module):
         self.fused_attn = use_fused_attn()
         mlp_hidden_dim = int(mlp_ratio * dim)
         in_proj_out_dim = mlp_hidden_dim + 3 * dim
-
+        # Q、K、V的投影和多层感知器（MLP）的隐藏层。
         self.in_norm = norm_layer(dim)
         self.in_proj = nn.Linear(dim, in_proj_out_dim, bias=qkv_bias)
         self.in_split = [mlp_hidden_dim] + [dim] * 3
-        if qkv_bias:
+        # 是一个列表 [mlp_hidden_dim,dim,dim,dim]
+        if qkv_bias:   # 在MLP和注意力模块中使用Q、K、V的偏置向量
+            # register_buffer: 这个方法的作用在于定义一组参数，特殊点在于训练模型中register_buffer 定义的参数不能被更新。
+            # register_parameter: 将一个不可训练的类型Tensor转换成可以训练的类型parameter，并将这个parameter绑定到这个module里面，
+            # 相当于变成了模型的一部分，成为了模型中可以根据训练进行变化的参数。
             self.register_buffer('qkv_bias', None)
             self.register_parameter('mlp_bias', None)
         else:
@@ -279,13 +286,15 @@ class ParallelScalingBlock(nn.Module):
             y = F.linear(y, self.in_proj.weight, torch.cat((self.qkv_bias, self.mlp_bias)))
         else:
             y = self.in_proj(y)
+        # y的形状(B, N, in_proj_out_dim) = (B, N, mlp_hidden_dim + dim * 3)
         x_mlp, q, k, v = torch.split(y, self.in_split, dim=-1)
-
+        # 原本只能产生qkv的线性层多产生一个mlp
         # Dot product attention w/ qk norm
         q = self.q_norm(q.view(B, N, self.num_heads, self.head_dim)).transpose(1, 2)
+        # q的形状(B,N,dim) -> (B,N,num_heads,head_dim) -> (B,num_heads,N,head_dim)
         k = self.k_norm(k.view(B, N, self.num_heads, self.head_dim)).transpose(1, 2)
         v = v.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
-        if self.fused_attn:
+        if self.fused_attn: # 计算注意力的方式
             x_attn = F.scaled_dot_product_attention(
                 q, k, v,
                 dropout_p=self.attn_drop.p if self.training else 0.,
@@ -391,6 +400,7 @@ class VisionTransformer(nn.Module):
     def __init__(
             self,
             img_size: Union[int, Tuple[int, int]] = 224,
+            # 可以输入一个整数也可以一个tuple（h * w）
             patch_size: Union[int, Tuple[int, int]] = 16,
             in_chans: int = 3,
             num_classes: int = 1000,
@@ -405,6 +415,7 @@ class VisionTransformer(nn.Module):
             class_token: bool = True,
             no_embed_class: bool = False,
             reg_tokens: int = 0,
+            # 位置令牌和分类令牌
             pre_norm: bool = False,
             fc_norm: Optional[bool] = None,
             dynamic_img_size: bool = False,
@@ -461,9 +472,12 @@ class VisionTransformer(nn.Module):
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         self.num_prefix_tokens = 1 if class_token else 0
         self.num_prefix_tokens += reg_tokens
+        # 前缀令牌
         self.num_reg_tokens = reg_tokens
+        # 没有用
         self.has_class_token = class_token
         self.no_embed_class = no_embed_class  # don't embed prefix positions (includes reg)
+        # 不对前缀token进行编码
         self.dynamic_img_size = dynamic_img_size
         self.grad_checkpointing = False
 
@@ -480,6 +494,7 @@ class VisionTransformer(nn.Module):
             dynamic_img_pad=dynamic_img_pad,
             **embed_args,
         )
+        # 新建了一个类
         num_patches = self.patch_embed.num_patches
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim)) if class_token else None
@@ -494,6 +509,7 @@ class VisionTransformer(nn.Module):
             )
         else:
             self.patch_drop = nn.Identity()
+            # Identity表示一个不执行任何操作的恒等函数
         self.norm_pre = norm_layer(embed_dim) if pre_norm else nn.Identity()
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
