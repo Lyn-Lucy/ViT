@@ -426,6 +426,7 @@ class VisionTransformer(nn.Module):
             proj_drop_rate: float = 0.,
             attn_drop_rate: float = 0.,
             drop_path_rate: float = 0.,
+            # 深度可分离卷积的随机深度残差的概率。
             weight_init: str = '',
             embed_layer: Callable = PatchEmbed,
             norm_layer: Optional[Callable] = None,
@@ -464,6 +465,7 @@ class VisionTransformer(nn.Module):
         assert global_pool in ('', 'avg', 'token', 'map')
         assert class_token or global_pool != 'token'
         use_fc_norm = global_pool == 'avg' if fc_norm is None else fc_norm
+        # 如果global_pool为'avg'，则use_fc_norm为True，否则为False。fc_norm参数是可选的，如果为None，则根据global_pool的值进行设置
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
         act_layer = act_layer or nn.GELU
 
@@ -494,7 +496,7 @@ class VisionTransformer(nn.Module):
             dynamic_img_pad=dynamic_img_pad,
             **embed_args,
         )
-        # 新建了一个类
+        # 新建了一个对象 embed_layer类
         num_patches = self.patch_embed.num_patches
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim)) if class_token else None
@@ -513,6 +515,7 @@ class VisionTransformer(nn.Module):
         self.norm_pre = norm_layer(embed_dim) if pre_norm else nn.Identity()
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        # 0到drop_path_rate生成depth个值
         self.blocks = nn.Sequential(*[
             block_fn(
                 dim=embed_dim,
@@ -583,6 +586,7 @@ class VisionTransformer(nn.Module):
     def get_classifier(self):
         return self.head
 
+    # 最后的分类器
     def reset_classifier(self, num_classes: int, global_pool=None):
         self.num_classes = num_classes
         if global_pool is not None:
@@ -594,7 +598,9 @@ class VisionTransformer(nn.Module):
             self.global_pool = global_pool
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
+
     def _pos_embed(self, x):
+        # 嵌入位置编码
         if self.dynamic_img_size:
             B, H, W, C = x.shape
             pos_embed = resample_abs_pos_embed(
@@ -640,11 +646,12 @@ class VisionTransformer(nn.Module):
         x = self._pos_embed(x)
         x = self.patch_drop(x)
         x = self.norm_pre(x)
+        # 打成patch的操作
         for i, blk in enumerate(self.blocks):
             x = blk(x)
             if i in take_indices:
                 outputs.append(x)
-
+        # 每一层的输出都保存下来
         return outputs
 
     def get_intermediate_layers(
@@ -660,11 +667,12 @@ class VisionTransformer(nn.Module):
         """
         # take last n blocks if n is an int, if in is a sequence, select by matching indices
         outputs = self._intermediate_layers(x, n)
+        # 得到输出
         if norm:
             outputs = [self.norm(out) for out in outputs]
         prefix_tokens = [out[:, 0:self.num_prefix_tokens] for out in outputs]
         outputs = [out[:, self.num_prefix_tokens:] for out in outputs]
-
+        # 输出分为前缀的和patch的
         if reshape:
             grid_size = self.patch_embed.grid_size
             outputs = [
@@ -695,6 +703,7 @@ class VisionTransformer(nn.Module):
             x = x[:, self.num_prefix_tokens:].mean(dim=1)
         elif self.global_pool:
             x = x[:, 0]  # class token
+        # 看看是用那种池化方式   分类头
         x = self.fc_norm(x)
         x = self.head_drop(x)
         return x if pre_logits else self.head(x)
